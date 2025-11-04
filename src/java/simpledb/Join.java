@@ -8,45 +8,60 @@ import java.util.*;
 public class Join extends Operator {
 
     private static final long serialVersionUID = 1L;
+    private JoinPredicate p;
+    private OpIterator child1;
+    private OpIterator child2;
+
+    // state for block nested loop join
+    private List<Tuple> outerBlock;
+    private int outerBlockIndex;
+    private Tuple currentInnerTuple;
+    // Adaptive block size: estimated pages in buffer pool minus 2 for inner
+    // relation
+    // Assuming average ~10 tuples per page
+    private static final int BLOCK_SIZE = (BufferPool.DEFAULT_PAGES - 2) * 10;
 
     /**
      * Constructor. Accepts two children to join and the predicate to join them
      * on
      * 
      * @param p
-     *            The predicate to use to join the children
+     *               The predicate to use to join the children
      * @param child1
-     *            Iterator for the left(outer) relation to join
+     *               Iterator for the left(outer) relation to join
      * @param child2
-     *            Iterator for the right(inner) relation to join
+     *               Iterator for the right(inner) relation to join
      */
     public Join(JoinPredicate p, OpIterator child1, OpIterator child2) {
-        // some code goes here
+        this.p = p;
+        this.child1 = child1;
+        this.child2 = child2;
     }
 
     public JoinPredicate getJoinPredicate() {
-        // some code goes here
-        return null;
+        return this.p;
     }
 
     /**
      * @return
-     *       the field name of join field1. Should be quantified by
-     *       alias or table name.
-     * */
+     *         the field name of join field1. Should be quantified by
+     *         alias or table name.
+     */
     public String getJoinField1Name() {
-        // some code goes here
-        return null;
+        int fieldIndex = p.getField1();
+        TupleDesc td1 = child1.getTupleDesc();
+        return td1.getFieldName(fieldIndex);
     }
 
     /**
      * @return
-     *       the field name of join field2. Should be quantified by
-     *       alias or table name.
-     * */
+     *         the field name of join field2. Should be quantified by
+     *         alias or table name.
+     */
     public String getJoinField2Name() {
-        // some code goes here
-        return null;
+        int fieldIndex = p.getField2();
+        TupleDesc td2 = child2.getTupleDesc();
+        return td2.getFieldName(fieldIndex);
     }
 
     /**
@@ -54,21 +69,31 @@ public class Join extends Operator {
      *      implementation logic.
      */
     public TupleDesc getTupleDesc() {
-        // some code goes here
-        return null;
+        return TupleDesc.merge(child1.getTupleDesc(), child2.getTupleDesc());
     }
 
     public void open() throws DbException, NoSuchElementException,
             TransactionAbortedException {
-        // some code goes here
+        super.open();
+        child1.open();
+        child2.open();
+        outerBlock = new ArrayList<>();
+        outerBlockIndex = 0;
+        currentInnerTuple = null;
     }
 
     public void close() {
-        // some code goes here
+        super.close();
+        child1.close();
+        child2.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
-        // some code goes here
+        child1.rewind();
+        child2.rewind();
+        outerBlock.clear();
+        outerBlockIndex = 0;
+        currentInnerTuple = null;
     }
 
     /**
@@ -90,19 +115,103 @@ public class Join extends Operator {
      * @see JoinPredicate#filter
      */
     protected Tuple fetchNext() throws TransactionAbortedException, DbException {
-        // some code goes here
-        return null;
+        // Block nested loop join algorithm (tuple based blocks)
+        while (true) {
+            // If we have a current inner tuple, try to match it with remaining outer tuples in block
+            if (currentInnerTuple != null) {
+                while (outerBlockIndex < outerBlock.size()) {
+                    Tuple outerTuple = outerBlock.get(outerBlockIndex);
+                    outerBlockIndex++;
+
+                    // Check if the join predicate is satisfied
+                    if (p.filter(outerTuple, currentInnerTuple)) {
+                        // Create merged tuple
+                        return mergeTuples(outerTuple, currentInnerTuple);
+                    }
+                }
+                // Exhausted current block for this inner tuple, get next inner tuple
+                outerBlockIndex = 0;
+                currentInnerTuple = null;
+            }
+
+            // Try to get next inner tuple
+            if (child2.hasNext()) {
+                currentInnerTuple = child2.next();
+                outerBlockIndex = 0;
+
+                // If outer block is empty, load a new block
+                if (outerBlock.isEmpty()) {
+                    loadOuterBlock();
+                    if (outerBlock.isEmpty()) {
+                        // No more outer tuples
+                        return null;
+                    }
+                }
+            } else {
+                // No more inner tuples, load next outer block
+                loadOuterBlock();
+                if (outerBlock.isEmpty()) {
+                    // No more outer tuples
+                    return null;
+                }
+
+                // Reset inner iterator for new outer block
+                child2.rewind();
+                if (child2.hasNext()) {
+                    currentInnerTuple = child2.next();
+                    outerBlockIndex = 0;
+                } else {
+                    // Inner relation is empty
+                    return null;
+                }
+            }
+        }
+    }
+
+    /**
+     * Helper method to load the next block of tuples from the outer relation
+     */
+    private void loadOuterBlock() throws TransactionAbortedException, DbException {
+        outerBlock.clear();
+        int count = 0;
+        while (count < BLOCK_SIZE && child1.hasNext()) {
+            outerBlock.add(child1.next());
+            count++;
+        }
+    }
+
+    /**
+     * Helper method to merge two tuples into one
+     */
+    private Tuple mergeTuples(Tuple t1, Tuple t2) {
+        TupleDesc combinedDesc = getTupleDesc();
+        Tuple result = new Tuple(combinedDesc);
+
+        // Copy fields from first tuple
+        int fieldIndex = 0;
+        for (int i = 0; i < t1.getTupleDesc().numFields(); i++) {
+            result.setField(fieldIndex++, t1.getField(i));
+        }
+
+        // Copy fields from second tuple
+        for (int i = 0; i < t2.getTupleDesc().numFields(); i++) {
+            result.setField(fieldIndex++, t2.getField(i));
+        }
+
+        return result;
     }
 
     @Override
     public OpIterator[] getChildren() {
-        // some code goes here
-        return null;
+        return new OpIterator[] { child1, child2 };
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
-        // some code goes here
+        if (children.length >= 2) {
+            child1 = children[0];
+            child2 = children[1];
+        }
     }
 
 }

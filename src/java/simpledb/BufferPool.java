@@ -1,7 +1,6 @@
 package simpledb;
 
 import java.io.*;
-import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -21,7 +20,7 @@ public class BufferPool {
 
     private static int pageSize = DEFAULT_PAGE_SIZE;
 
-    private HashMap<PageId, Page> bufferPool;
+    private ConcurrentHashMap<PageId, Page> bufferPool;
     private int numPages;
 
     /**
@@ -39,7 +38,7 @@ public class BufferPool {
 
     public BufferPool(int numPages) {
         this.numPages = numPages;
-        this.bufferPool = new HashMap<PageId, Page>();
+        this.bufferPool = new ConcurrentHashMap<PageId, Page>();
     }
 
     public static int getPageSize() {

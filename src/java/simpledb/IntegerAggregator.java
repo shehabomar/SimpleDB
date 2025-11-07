@@ -1,9 +1,9 @@
 package simpledb;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Knows how to compute some aggregate over a set of IntFields.
@@ -42,8 +42,8 @@ public class IntegerAggregator implements Aggregator {
         this.afield = afield;
         this.what = what;
 
-        this.resByGroup = new HashMap<>();
-        this.cntsByGroup = new HashMap<>();
+        this.resByGroup = new ConcurrentHashMap<>();
+        this.cntsByGroup = new ConcurrentHashMap<>();
         this.singleCnt = 0;
         this.singleRes = null;
     }

@@ -1,9 +1,9 @@
 package simpledb;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Knows how to compute some aggregate over a set of StringFields.
@@ -41,7 +41,7 @@ public class StringAggregator implements Aggregator {
         }
 
         this.what = what;
-        this.groupCnts = new HashMap<>();
+        this.groupCnts = new ConcurrentHashMap<>();
         this.overallCnt = 0;
     }
 
@@ -74,21 +74,21 @@ public class StringAggregator implements Aggregator {
      */
     public OpIterator iterator() {
         TupleDesc shcema;
-        if(gbfield == NO_GROUPING) {
+        if (gbfield == NO_GROUPING) {
             // single col
-            shcema = new TupleDesc(new Type[] {Type.INT_TYPE});
-        }else {
+            shcema = new TupleDesc(new Type[] { Type.INT_TYPE });
+        } else {
             // two cols
-            shcema = new TupleDesc(new Type[] {gbfieldType, Type.INT_TYPE});
+            shcema = new TupleDesc(new Type[] { gbfieldType, Type.INT_TYPE });
         }
 
         List<Tuple> resTuples = new ArrayList<>();
-        if(gbfield == NO_GROUPING){
+        if (gbfield == NO_GROUPING) {
             Tuple resTuple = new Tuple(shcema);
             resTuple.setField(0, new IntField(overallCnt));
             resTuples.add(resTuple);
         } else {
-            for(Map.Entry<Field, Integer> entry: groupCnts.entrySet()){
+            for (Map.Entry<Field, Integer> entry : groupCnts.entrySet()) {
                 Tuple resTuple = new Tuple(shcema);
                 resTuple.setField(0, entry.getKey());
                 resTuple.setField(1, new IntField(entry.getValue()));

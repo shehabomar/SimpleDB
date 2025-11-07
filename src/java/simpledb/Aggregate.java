@@ -10,6 +10,13 @@ import java.util.*;
 public class Aggregate extends Operator {
 
     private static final long serialVersionUID = 1L;
+    private OpIterator child;
+    private int afield;
+    private int gfield;
+    private Aggregator.Op aop;
+    private Aggregator calculator;
+    private OpIterator resIterator;
+    private TupleDesc resSchema;
 
     /**
      * Constructor.
@@ -20,71 +27,115 @@ public class Aggregate extends Operator {
      * 
      * 
      * @param child
-     *            The OpIterator that is feeding us tuples.
+     *               The OpIterator that is feeding us tuples.
      * @param afield
-     *            The column over which we are computing an aggregate.
+     *               The column over which we are computing an aggregate.
      * @param gfield
-     *            The column over which we are grouping the result, or -1 if
-     *            there is no grouping
+     *               The column over which we are grouping the result, or -1 if
+     *               there is no grouping
      * @param aop
-     *            The aggregation operator to use
+     *               The aggregation operator to use
      */
     public Aggregate(OpIterator child, int afield, int gfield, Aggregator.Op aop) {
-	// some code goes here
+        this.child = child;
+        this.afield = afield;
+        this.gfield = gfield;
+        this.aop = aop;
+
+        TupleDesc childScehma = child.getTupleDesc();
+        Type aggFieldType = childScehma.getFieldType(afield);
+
+        Type groupFieldType = null;
+        if (gfield != Aggregator.NO_GROUPING) {
+            groupFieldType = childScehma.getFieldType(gfield);
+        }
+
+        if (aggFieldType == Type.INT_TYPE) {
+            calculator = new IntegerAggregator(gfield, groupFieldType, afield, aop);
+        } else {
+            calculator = new StringAggregator(gfield, groupFieldType, afield, aop);
+
+        }
+        this.resSchema = buildOutputSchema(childScehma);
     }
 
+    private TupleDesc buildOutputSchema(TupleDesc inSchema){
+        String afieldName = inSchema.getFieldName(afield);
+        String aName = aop.toString() + "(" + afieldName + ")";
+        
+        if (gfield == Aggregator.NO_GROUPING) {
+            // Single column output
+            return new TupleDesc(
+                    new Type[] { Type.INT_TYPE },
+                    new String[] { aName });
+        } else {
+            // Two column output: group field + aggregate
+            String groupFieldName = inSchema.getFieldName(gfield);
+            Type groupType = inSchema.getFieldType(gfield);
+
+            return new TupleDesc(
+                    new Type[] { groupType, Type.INT_TYPE },
+                    new String[] { groupFieldName, aName });
+        }
+    }
     /**
      * @return If this aggregate is accompanied by a groupby, return the groupby
      *         field index in the <b>INPUT</b> tuples. If not, return
      *         {@link simpledb.Aggregator#NO_GROUPING}
-     * */
+     */
     public int groupField() {
-	// some code goes here
-	return -1;
+        return gfield;
     }
 
     /**
      * @return If this aggregate is accompanied by a group by, return the name
      *         of the groupby field in the <b>OUTPUT</b> tuples. If not, return
      *         null;
-     * */
+     */
     public String groupFieldName() {
-	// some code goes here
-	return null;
+        if (gfield == Aggregator.NO_GROUPING) {
+            return null;
+        }
+        return child.getTupleDesc().getFieldName(gfield);
     }
 
     /**
      * @return the aggregate field
-     * */
+     */
     public int aggregateField() {
-	// some code goes here
-	return -1;
+        return afield;
     }
 
     /**
      * @return return the name of the aggregate field in the <b>OUTPUT</b>
      *         tuples
-     * */
+     */
     public String aggregateFieldName() {
-	// some code goes here
-	return null;
+        return resSchema.getFieldName(resSchema.numFields() - 1);
     }
 
     /**
      * @return return the aggregate operator
-     * */
+     */
     public Aggregator.Op aggregateOp() {
-	// some code goes here
-	return null;
+        return aop;
     }
 
     public static String nameOfAggregatorOp(Aggregator.Op aop) {
-	return aop.toString();
+        return aop.toString();
     }
 
     public void open() throws NoSuchElementException, DbException,
-	    TransactionAbortedException {
-	// some code goes here
+            TransactionAbortedException {
+        super.open();
+        child.open();
+
+        while (child.hasNext()) {
+            Tuple nexTuple = child.next();
+            calculator.mergeTupleIntoGroup(nexTuple);
+        }
+        resIterator = calculator.iterator();
+        resIterator.open();
     }
 
     /**
@@ -95,12 +146,14 @@ public class Aggregate extends Operator {
      * aggregate. Should return null if there are no more tuples.
      */
     protected Tuple fetchNext() throws TransactionAbortedException, DbException {
-	// some code goes here
-	return null;
+        if (resIterator != null && resIterator.hasNext()) {
+            return resIterator.next();
+        }
+        return null;
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
-	// some code goes here
+        resIterator.rewind();
     }
 
     /**
@@ -115,23 +168,27 @@ public class Aggregate extends Operator {
      * iterator.
      */
     public TupleDesc getTupleDesc() {
-	// some code goes here
-	return null;
+        return resSchema;
     }
 
     public void close() {
-	// some code goes here
+        super.close();
+        child.close();
+        if (resIterator != null) {
+            resIterator.close();
+        }
     }
 
     @Override
     public OpIterator[] getChildren() {
-	// some code goes here
-	return null;
+        return new OpIterator[] { child };
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
-	// some code goes here
+        if (children.length > 0) {
+            child = children[0];
+        }
     }
-    
+
 }

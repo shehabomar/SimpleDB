@@ -22,6 +22,9 @@ public class BufferPool {
     private static int pageSize = DEFAULT_PAGE_SIZE;
 
     private ConcurrentHashMap<PageId, Page> bufferPool;
+    private ConcurrentHashMap<PageId, Boolean> referenceBits;
+    private ArrayList<PageId> clockQueue;
+    private int clockHand;
     private int numPages;
 
     /**
@@ -40,6 +43,9 @@ public class BufferPool {
     public BufferPool(int numPages) {
         this.numPages = numPages;
         this.bufferPool = new ConcurrentHashMap<PageId, Page>();
+        this.referenceBits = new ConcurrentHashMap<PageId, Boolean>();
+        this.clockQueue = new ArrayList<PageId>();
+        this.clockHand = 0;
     }
 
     public static int getPageSize() {
@@ -75,15 +81,22 @@ public class BufferPool {
             throws TransactionAbortedException, DbException {
 
         if (bufferPool.containsKey(pid)) {
+            // set reference bit to true when page is accessed
+            referenceBits.put(pid, true);
             return bufferPool.get(pid);
         } else {
-            // Check if cache is full
+            // check if cache is full and evict if necessary
             if (bufferPool.size() >= numPages) {
-                throw new DbException("Buffer pool is full");
+                evictPage();
             }
 
             Page page = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
             bufferPool.put(pid, page);
+
+            // initialize reference bit and add to clock queue
+            referenceBits.put(pid, true);
+            clockQueue.add(pid);
+
             return page;
         }
     }
@@ -196,9 +209,9 @@ public class BufferPool {
      * break simpledb if running in NO STEAL mode.
      */
     public synchronized void flushAllPages() throws IOException {
-        // some code goes here
-        // not necessary for lab1
-
+        for (PageId pid : bufferPool.keySet()) {
+            flushPage(pid);
+        }
     }
 
     /**
@@ -211,8 +224,9 @@ public class BufferPool {
      * are removed from the cache so they can be reused safely
      */
     public synchronized void discardPage(PageId pid) {
-        // some code goes here
-        // not necessary for lab1
+        bufferPool.remove(pid);
+        referenceBits.remove(pid);
+        clockQueue.remove(pid);
     }
 
     /**
@@ -221,8 +235,17 @@ public class BufferPool {
      * @param pid an ID indicating the page to flush
      */
     private synchronized void flushPage(PageId pid) throws IOException {
-        // some code goes here
-        // not necessary for lab1
+        Page page = bufferPool.get(pid);
+        if (page == null) {
+            return;
+        }
+
+        // write dirty page to disk
+        TransactionId dirtier = page.isDirty();
+        if (dirtier != null) {
+            Database.getCatalog().getDatabaseFile(pid.getTableId()).writePage(page);
+            page.markDirty(false, null);
+        }
     }
 
     /**
@@ -234,12 +257,102 @@ public class BufferPool {
     }
 
     /**
-     * Discards a page from the buffer pool.
-     * Flushes the page to disk to ensure dirty pages are updated on disk.
+     * Discards a page from the buffer pool using the Clock eviction algorithm.
+     * The Clock algorithm approximates LRU by maintaining a reference bit for each
+     * page.
+     * 
+     * Algorithm:
+     * 1. Start at the current clock hand position
+     * 2. If the page at clock hand has reference bit = 0 and is not dirty, evict it
+     * 3. If the page has reference bit = 1, set it to 0 and move to next page
+     * 4. If the page is dirty, skip it on first pass, flush and evict on second
+     * pass if needed
+     * 5. Move clock hand forward and repeat
+     * 
+     * This gives recently accessed pages a "second chance" before eviction.
      */
     private synchronized void evictPage() throws DbException {
-        // some code goes here
-        // not necessary for lab1
+        if (clockQueue.isEmpty()) {
+            throw new DbException("No pages to evict");
+        }
+
+        int queueSize = clockQueue.size();
+        int attempts = 0;
+        int maxAttempts = queueSize * 2; // Two full passes
+
+        while (attempts < maxAttempts) {
+            // wrap around if needed
+            if (clockHand >= clockQueue.size()) {
+                clockHand = 0;
+            }
+
+            PageId pid = clockQueue.get(clockHand);
+            Page page = bufferPool.get(pid);
+
+            // check if page was removed (shouldn't happen, but defensive)
+            if (page == null) {
+                clockQueue.remove(clockHand);
+                continue;
+            }
+
+            Boolean refBit = referenceBits.get(pid);
+            boolean isDirty = (page.isDirty() != null);
+
+            // clock algorithm logic
+            if (refBit != null && refBit) {
+                // reference bit is set - give it a second chance
+                referenceBits.put(pid, false);
+                clockHand++;
+                attempts++;
+            } else if (!isDirty) {
+                // reference bit is 0 and page is clean - evict this page
+                try {
+                    flushPage(pid); // flush in case (though it's clean)
+                } catch (IOException e) {
+                    throw new DbException("Error flushing page during eviction: " + e.getMessage());
+                }
+
+                bufferPool.remove(pid);
+                referenceBits.remove(pid);
+                clockQueue.remove(clockHand);
+                return;
+            } else {
+                // page is dirty - skip on first pass, but clear reference bit
+                referenceBits.put(pid, false);
+                clockHand++;
+                attempts++;
+
+                // on second pass through, evict dirty pages if necessary
+                if (attempts >= queueSize) {
+                    try {
+                        flushPage(pid);
+                    } catch (IOException e) {
+                        throw new DbException("Error flushing page during eviction: " + e.getMessage());
+                    }
+
+                    bufferPool.remove(pid);
+                    referenceBits.remove(pid);
+                    clockQueue.remove(clockHand);
+                    return;
+                }
+            }
+        }
+
+        // If we get here, something went wrong - just evict the page at clock hand
+        if (!clockQueue.isEmpty()) {
+            if (clockHand >= clockQueue.size()) {
+                clockHand = 0;
+            }
+            PageId pid = clockQueue.get(clockHand);
+            try {
+                flushPage(pid);
+            } catch (IOException e) {
+                throw new DbException("Error flushing page during eviction: " + e.getMessage());
+            }
+            bufferPool.remove(pid);
+            referenceBits.remove(pid);
+            clockQueue.remove(clockHand);
+        }
     }
 
 }
